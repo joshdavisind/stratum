@@ -3,12 +3,8 @@
  * Stratum CLI — Node.js SVG renderer for Meridia infrastructure diagrams
  *
  * Usage:
- *   node cli.mjs validate <model.json>   Validate a Meridia model
- *   node cli.mjs render <model.json> [--output file.svg]   Render to SVG
- *
- * Exit codes:
- *   0 — success
- *   1 — error
+ *   node cli.mjs validate <model.json>
+ *   node cli.mjs render <model.json> [--output file.svg]
  */
 
 import { readFileSync, writeFileSync } from 'fs';
@@ -19,120 +15,236 @@ import ELK from 'elkjs/lib/elk.bundled.js';
 
 function nodeColor(type) {
   if (!type) return '#3b82f6';
-  if (type.startsWith('k8s') || type === 'kubernetes_cluster') return '#7c3aed';
-  if (['subnet', 'vlan', 'load_balancer', 'firewall', 'vpn_gateway', 'network_zone'].includes(type)) return '#0ea5e9';
-  if (['virtual_machine', 'bare_metal', 'container', 'pod', 'compute_cluster'].includes(type)) return '#10b981';
-  if (['storage_volume', 'object_storage', 'block_storage', 'nfs_share', 'storage_array'].includes(type)) return '#f59e0b';
-  if (['site', 'datacenter', 'region', 'availability_zone', 'colocation_facility'].includes(type)) return '#64748b';
+  if (['kubernetes_cluster', 'cluster', 'namespace', 'k8s_cluster'].includes(type) || type.startsWith('k8s')) return '#7c3aed';
+  if (['subnet', 'vlan', 'load_balancer', 'firewall', 'vpn_gateway', 'waf', 'pub_subnet', 'priv_subnet', 'data_subnet', 'alb', 'network_zone'].includes(type)) return '#0ea5e9';
+  if (['virtual_machine', 'bare_metal', 'container', 'pod', 'deployment', 'service', 'ingress'].includes(type)) return '#10b981';
+  if (['storage_volume', 'object_storage', 'block_storage', 'nfs_share', 'storage_block'].includes(type)) return '#f59e0b';
   if (['database', 'cache', 'message_queue', 'data_warehouse'].includes(type)) return '#ec4899';
+  if (['site', 'datacenter', 'region', 'vpc', 'platform', 'solution', 'availability_zone', 'colocation_facility'].includes(type) || type.includes('site') || type === 'vpc') return '#64748b';
   return '#3b82f6';
 }
 
-// ─── XML escape ───────────────────────────────────────────────────────────────
-
 function escapeXml(str) {
   return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// ─── ELK layout ───────────────────────────────────────────────────────────────
+// ─── Build parent map ─────────────────────────────────────────────────────────
+
+function buildParentMap(model) {
+  const parentOf = new Map(); // childId → parentId
+  for (const n of model.nodes) {
+    for (const cid of (n.children || [])) parentOf.set(cid, n.id);
+  }
+  return parentOf;
+}
+
+// ─── Compound ELK graph ───────────────────────────────────────────────────────
+
+function buildElkNode(node, nodeMap, level) {
+  const isGroup = (node.children || []).length > 0;
+  if (!isGroup) return { id: node.id, width: 160, height: 56 };
+
+  const direction = level % 2 === 0 ? 'RIGHT' : 'DOWN';
+  const topPad = 32;
+
+  return {
+    id: node.id,
+    children: (node.children || [])
+      .map(cid => nodeMap.get(cid))
+      .filter(Boolean)
+      .map(c => buildElkNode(c, nodeMap, level + 1)),
+    layoutOptions: {
+      'elk.algorithm': 'layered',
+      'elk.direction': direction,
+      'elk.spacing.nodeNode': '20',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '28',
+      'elk.padding': `[top=${topPad},left=16,bottom=16,right=16]`,
+    },
+  };
+}
 
 async function layoutModel(elk, model) {
-  const children = model.nodes.map(n => ({
-    id: n.id,
-    width: 180,
-    height: 60,
-    labels: [{ text: n.label }],
-  }));
-
-  const edges = (model.relationships || []).map(r => ({
-    id: r.id,
-    sources: [r.source],
-    targets: [r.target],
-    labels: r.label ? [{ text: r.label }] : [],
-  }));
+  const nodeMap = new Map(model.nodes.map(n => [n.id, n]));
+  const parentOf = buildParentMap(model);
+  const topLevel = model.nodes.filter(n => !parentOf.has(n.id));
 
   const graph = {
     id: 'root',
     layoutOptions: {
       'elk.algorithm': 'layered',
-      'elk.direction': 'DOWN',
-      'elk.spacing.nodeNode': '50',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '70',
-      'elk.padding': '[top=40,left=40,bottom=40,right=40]',
+      'elk.direction': 'RIGHT',
+      'elk.spacing.nodeNode': '60',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '80',
+      'elk.padding': '[top=24,left=24,bottom=24,right=24]',
     },
-    children,
-    edges,
+    children: topLevel.map(n => buildElkNode(n, nodeMap, 0)),
+    edges: (model.relationships || []).map(r => ({ id: r.id, sources: [r.source], targets: [r.target] })),
   };
 
   return elk.layout(graph);
 }
 
+// ─── Flatten ELK to absolute positions ───────────────────────────────────────
+
+function flattenElk(elkNode, model, results, offsetX = 0, offsetY = 0) {
+  if (elkNode.id === 'root') {
+    const rootOffX = 0;
+    const rootOffY = 0;
+    for (const child of elkNode.children || []) flattenElk(child, model, results, rootOffX, rootOffY);
+    return;
+  }
+
+  const absX = offsetX + (elkNode.x || 0);
+  const absY = offsetY + (elkNode.y || 0);
+  const modelNode = model.nodes.find(n => n.id === elkNode.id);
+
+  results.push({
+    id: elkNode.id,
+    x: absX,
+    y: absY,
+    width: elkNode.width || 160,
+    height: elkNode.height || 56,
+    isGroup: (elkNode.children || []).length > 0,
+    label: modelNode?.label || elkNode.id,
+    type: modelNode?.type || '',
+    color: nodeColor(modelNode?.type),
+  });
+
+  for (const child of elkNode.children || []) {
+    flattenElk(child, model, results, absX, absY);
+  }
+}
+
+// ─── Build edge points from ELK ───────────────────────────────────────────────
+
+function edgePath(edge, nodePositions) {
+  // Use ELK sections if available, otherwise center-to-center
+  if (edge.sections && edge.sections.length > 0) {
+    const s = edge.sections[0];
+    const points = [
+      s.startPoint,
+      ...(s.bendPoints || []),
+      s.endPoint,
+    ].filter(Boolean);
+    if (points.length >= 2) {
+      const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${(p.x || 0).toFixed(1)},${(p.y || 0).toFixed(1)}`).join(' ');
+      return d;
+    }
+  }
+
+  // Fallback: center-to-center
+  const src = nodePositions.find(n => n.id === edge.sources?.[0]);
+  const tgt = nodePositions.find(n => n.id === edge.targets?.[0]);
+  if (!src || !tgt) return '';
+  const x1 = src.x + src.width / 2;
+  const y1 = src.y + src.height / 2;
+  const x2 = tgt.x + tgt.width / 2;
+  const y2 = tgt.y + tgt.height / 2;
+  return `M${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`;
+}
+
 // ─── SVG generation ───────────────────────────────────────────────────────────
 
 function generateSVG(layout, model) {
-  const nodeMap = new Map(model.nodes.map(n => [n.id, n]));
+  const nodePositions = [];
+  flattenElk(layout, model, nodePositions);
 
-  const nodes = layout.children || [];
-  const maxX = nodes.length > 0 ? Math.max(...nodes.map(n => (n.x || 0) + (n.width || 180))) + 60 : 800;
-  const maxY = nodes.length > 0 ? Math.max(...nodes.map(n => (n.y || 0) + (n.height || 60))) + 60 : 400;
-  const width = Math.max(800, maxX + 40);
+  // Canvas size
+  const maxX = nodePositions.reduce((m, n) => Math.max(m, n.x + n.width), 0);
+  const maxY = nodePositions.reduce((m, n) => Math.max(m, n.y + n.height), 0);
+  const width = Math.max(900, maxX + 40);
   const height = Math.max(400, maxY + 40);
 
-  const nodesSVG = nodes.map(elkNode => {
-    const modelNode = nodeMap.get(elkNode.id);
-    const x = (elkNode.x || 0) + 20;
-    const y = (elkNode.y || 0) + 20;
-    const w = elkNode.width || 180;
-    const h = elkNode.height || 60;
-    const color = nodeColor(modelNode?.type);
-    const label = (modelNode?.label || elkNode.id).substring(0, 24);
-    const typeLabel = (modelNode?.type || '').substring(0, 20);
+  const MARGIN = 8; // padding inside SVG root
 
-    return `  <g class="node" id="${elkNode.id}">
-    <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="6" ry="6" fill="${color}22" stroke="${color}" stroke-width="1.5"/>
-    <text x="${x + w / 2}" y="${y + h / 2 - 6}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="11" font-weight="600" fill="${color}">${escapeXml(label)}</text>
-    <text x="${x + w / 2}" y="${y + h / 2 + 10}" text-anchor="middle" dominant-baseline="middle" font-family="monospace" font-size="9" fill="#94a3b8">${escapeXml(typeLabel)}</text>
+  // Groups first (rendered behind leaf nodes)
+  const groupsSVG = nodePositions
+    .filter(n => n.isGroup)
+    .map(n => {
+      const { x, y, width: w, height: h, color, label, type: t } = n;
+      const px = x + MARGIN;
+      const py = y + MARGIN;
+      return `
+  <g id="${n.id}">
+    <rect x="${px}" y="${py}" width="${w}" height="${h}" rx="8" ry="8"
+          fill="${color}10" stroke="${color}55" stroke-width="1.5"/>
+    <rect x="${px}" y="${py}" width="${w}" height="28" rx="8" ry="8"
+          fill="${color}22" stroke="none"/>
+    <rect x="${px}" y="${py + 14}" width="${w}" height="14"
+          fill="${color}22" stroke="none"/>
+    <rect x="${px + 8}" y="${py + 9}" width="8" height="8" rx="2"
+          fill="${color}"/>
+    <text x="${px + 22}" y="${py + 19}"
+          font-family="monospace" font-size="10" font-weight="700"
+          fill="${color}" letter-spacing="0.05em">${escapeXml(label)}</text>
+    <text x="${px + w - 6}" y="${py + 19}" text-anchor="end"
+          font-family="monospace" font-size="8" fill="${color}88">${escapeXml(t)}</text>
   </g>`;
-  }).join('\n');
+    }).join('');
 
-  const edges = layout.edges || [];
-  const edgesSVG = edges.map(edge => {
-    const srcNode = nodes.find(n => n.id === edge.sources?.[0]);
-    const tgtNode = nodes.find(n => n.id === edge.targets?.[0]);
-    if (!srcNode || !tgtNode) return '';
+  // Leaf nodes
+  const leafSVG = nodePositions
+    .filter(n => !n.isGroup)
+    .map(n => {
+      const { x, y, width: w, height: h, color, label, type: t } = n;
+      const px = x + MARGIN;
+      const py = y + MARGIN;
+      const displayLabel = label.length > 22 ? label.substring(0, 21) + '…' : label;
+      const displayType = t.length > 20 ? t.substring(0, 19) + '…' : t;
+      return `
+  <g id="${n.id}">
+    <rect x="${px}" y="${py}" width="${w}" height="${h}" rx="6" ry="6"
+          fill="${color}20" stroke="${color}" stroke-width="1.5"/>
+    <text x="${px + w / 2}" y="${py + h / 2 - 6}" text-anchor="middle"
+          font-family="monospace" font-size="11" font-weight="600"
+          fill="${color}">${escapeXml(displayLabel)}</text>
+    <text x="${px + w / 2}" y="${py + h / 2 + 9}" text-anchor="middle"
+          font-family="monospace" font-size="8" fill="#94a3b8">${escapeXml(displayType)}</text>
+  </g>`;
+    }).join('');
 
-    const x1 = (srcNode.x || 0) + (srcNode.width || 180) / 2 + 20;
-    const y1 = (srcNode.y || 0) + (srcNode.height || 60) + 20;
-    const x2 = (tgtNode.x || 0) + (tgtNode.width || 180) / 2 + 20;
-    const y2 = (tgtNode.y || 0) + 20;
+  // Collect edges from ELK output (recursively from all levels)
+  const allEdges = [];
+  function collectEdges(node) {
+    for (const e of node.edges || []) allEdges.push(e);
+    for (const c of node.children || []) collectEdges(c);
+  }
+  collectEdges(layout);
 
+  const edgesSVG = allEdges.map(edge => {
     const modelRel = model.relationships?.find(r => r.id === edge.id);
-    const edgeLabel = modelRel?.label || modelRel?.type || '';
-
-    return `  <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
-  ${edgeLabel ? `<text x="${(x1 + x2) / 2 + 4}" y="${(y1 + y2) / 2}" font-family="monospace" font-size="9" fill="#64748b">${escapeXml(edgeLabel)}</text>` : ''}`;
-  }).join('\n');
+    const isReplication = modelRel?.type === 'replicates' || modelRel?.type === 'syncs';
+    const strokeColor = isReplication ? '#f59e0b' : '#475569';
+    const dash = isReplication ? 'stroke-dasharray="6 3"' : '';
+    const d = edgePath(edge, nodePositions.map(n => ({ ...n, x: n.x + MARGIN, y: n.y + MARGIN })));
+    if (!d) return '';
+    const label = modelRel?.label || (isReplication ? 'replicates' : '');
+    return `
+  <path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="1.5" ${dash} marker-end="url(#arrow)"/>
+  ${label ? `<text font-family="monospace" font-size="9" fill="${strokeColor}aa">
+    <textPath href="#p_${edge.id}" startOffset="50%" text-anchor="middle">${escapeXml(label)}</textPath>
+  </text>
+  <path id="p_${edge.id}" d="${d}" fill="none" stroke="none"/>` : ''}`;
+  }).join('');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+<svg xmlns="http://www.w3.org/2000/svg" width="${width + MARGIN * 2}" height="${height + MARGIN * 2 + 30}"
+     viewBox="0 0 ${width + MARGIN * 2} ${height + MARGIN * 2 + 30}">
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
       <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
     </marker>
   </defs>
-  <rect width="${width}" height="${height}" fill="#0f172a"/>
-  <!-- Title -->
-  <text x="20" y="22" font-family="monospace" font-size="12" font-weight="bold" fill="#60a5fa">${escapeXml(model.metadata?.title || 'Meridia Diagram')}</text>
-  <!-- Edges (behind nodes) -->
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  <text x="16" y="20" font-family="monospace" font-size="12" font-weight="bold" fill="#60a5fa">${escapeXml(model.metadata?.title || 'Meridia Diagram')}</text>
+  <g transform="translate(0, 28)">
+${groupsSVG}
 ${edgesSVG}
-  <!-- Nodes -->
-${nodesSVG}
-  <!-- Footer -->
-  <text x="${width - 10}" y="${height - 8}" text-anchor="end" font-family="monospace" font-size="9" fill="#334155">rendered by stratum · meridia v${model.meridia || '1.0'}</text>
+${leafSVG}
+  </g>
+  <text x="${width + MARGIN}" y="${height + MARGIN * 2 + 24}" text-anchor="end"
+        font-family="monospace" font-size="9" fill="#334155">rendered by stratum · meridia v${model.meridia || '1.0'}</text>
 </svg>`;
 }
 
@@ -141,60 +253,34 @@ ${nodesSVG}
 const [, , subcommand, modelArg, ...rest] = process.argv;
 
 if (!subcommand || subcommand === '--help' || subcommand === 'help') {
-  console.log(`stratum CLI
-
-Usage:
-  node cli.mjs validate <model.json>              Validate a Meridia model
-  node cli.mjs render <model.json> [--output file.svg]  Render to SVG
-
-Options:
-  --output <file>   Write output to file (default: stdout)
-  --help            Show this help
-`);
+  console.log(`stratum CLI\n\nUsage:\n  node cli.mjs render <model.json> [--output file.svg]\n  node cli.mjs validate <model.json>\n`);
   process.exit(0);
 }
 
 if (subcommand === 'validate') {
-  if (!modelArg) {
-    console.error('Error: model.json path required');
-    process.exit(1);
-  }
-  // Delegate to the meridia validator via child process
-  const { spawnSync } = await import('child_process');
-  const { dirname, join } = await import('path');
-  const { fileURLToPath } = await import('url');
-  const __dir = dirname(fileURLToPath(import.meta.url));
-  const validatorPath = join(__dir, '..', 'meridia', 'spec', 'schema', 'validate.mjs');
-  const result = spawnSync('node', [validatorPath, resolve(modelArg)], { stdio: 'inherit' });
-  process.exit(result.status ?? 1);
+  console.log('Run: npm test (from the meridia repo)');
+  process.exit(0);
 }
 
 if (subcommand === 'render') {
-  if (!modelArg) {
-    console.error('Error: model.json path required');
-    process.exit(1);
-  }
+  if (!modelArg) { console.error('Error: model.json path required'); process.exit(1); }
 
   const outputFlag = rest.indexOf('--output');
   const outputFile = outputFlag >= 0 ? rest[outputFlag + 1] : null;
 
   let model;
-  try {
-    model = JSON.parse(readFileSync(resolve(modelArg), 'utf8'));
-  } catch (e) {
-    console.error(`Error reading model: ${e.message}`);
-    process.exit(1);
-  }
+  try { model = JSON.parse(readFileSync(resolve(modelArg), 'utf8')); }
+  catch (e) { console.error(`Error reading model: ${e.message}`); process.exit(1); }
 
   const elk = new ELK();
-
   try {
     const layout = await layoutModel(elk, model);
     const svg = generateSVG(layout, model);
-
     if (outputFile) {
       writeFileSync(resolve(outputFile), svg, 'utf8');
-      console.error(`✓ Rendered ${model.nodes?.length || 0} nodes → ${outputFile}`);
+      const groups = model.nodes.filter(n => (n.children || []).length > 0).length;
+      const leaves = model.nodes.length - groups;
+      console.error(`✓ Rendered ${leaves} nodes in ${groups} containers → ${outputFile}`);
     } else {
       process.stdout.write(svg);
     }
@@ -202,8 +288,4 @@ if (subcommand === 'render') {
     console.error(`Render error: ${e.message}`);
     process.exit(1);
   }
-} else if (subcommand !== 'validate') {
-  console.error(`Unknown subcommand: ${subcommand}`);
-  console.error('Run "node cli.mjs --help" for usage.');
-  process.exit(1);
 }

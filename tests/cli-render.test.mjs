@@ -70,7 +70,8 @@ describe('Stratum CLI renderer', () => {
 
   test('output SVG contains all 27 nodes from multi-site-dr model', () => {
     const content = readFileSync(OUTPUT_FILE, 'utf8');
-    const nodeCount = (content.match(/class="node"/g) || []).length;
+    // Count <g id="..."> elements — one per node (groups + leaves = 27 total)
+    const nodeCount = (content.match(/<g id="/g) || []).length;
     expect(nodeCount).toBe(27);
   });
 
