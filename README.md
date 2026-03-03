@@ -77,3 +77,35 @@ Stratum renders models that conform to the [Meridia v1 specification](https://gi
 ## License
 
 MIT
+
+---
+
+## CLI Usage
+
+Stratum ships a pure Node.js CLI renderer alongside the browser app.
+
+```bash
+# Render a Meridia model to SVG
+node cli.mjs render <model.json> --output diagram.svg
+
+# Validate a Meridia model (delegates to meridia validator)
+node cli.mjs validate <model.json>
+
+# Or via npm scripts
+npm run render -- <model.json> --output diagram.svg
+```
+
+Example:
+```bash
+node cli.mjs render ../meridia/examples/multi-site-dr.json --output output.svg
+```
+
+---
+
+## Testing
+
+```bash
+npm test   # run full test suite (vitest)
+```
+
+Tests: 10 passing (vitest)
