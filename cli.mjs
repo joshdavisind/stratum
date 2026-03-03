@@ -116,32 +116,49 @@ function flattenElk(elkNode, model, results, offsetX = 0, offsetY = 0) {
   }
 }
 
-// ─── Build edge points from ELK ───────────────────────────────────────────────
+// ─── Orthogonal border-to-border edge routing ─────────────────────────────────
+// Routes from the appropriate border of the source node to the target node,
+// using an L-shaped elbow connector. Ignores ELK sections (compound graph edge
+// sections have coordinate-space issues) and computes clean paths directly
+// from absolute node positions.
 
-function edgePath(edge, nodePositions) {
-  // Use ELK sections if available, otherwise center-to-center
-  if (edge.sections && edge.sections.length > 0) {
-    const s = edge.sections[0];
-    const points = [
-      s.startPoint,
-      ...(s.bendPoints || []),
-      s.endPoint,
-    ].filter(Boolean);
-    if (points.length >= 2) {
-      const d = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${(p.x || 0).toFixed(1)},${(p.y || 0).toFixed(1)}`).join(' ');
-      return d;
+function routeEdge(src, tgt) {
+  const srcCx = src.x + src.width / 2;
+  const srcCy = src.y + src.height / 2;
+  const tgtCx = tgt.x + tgt.width / 2;
+  const tgtCy = tgt.y + tgt.height / 2;
+
+  const dx = tgtCx - srcCx;
+  const dy = tgtCy - srcCy;
+
+  let x1, y1, x2, y2;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    // Primarily horizontal
+    if (dx >= 0) {
+      x1 = src.x + src.width; y1 = srcCy;
+      x2 = tgt.x;             y2 = tgtCy;
+    } else {
+      x1 = src.x;             y1 = srcCy;
+      x2 = tgt.x + tgt.width; y2 = tgtCy;
+    }
+  } else {
+    // Primarily vertical
+    if (dy >= 0) {
+      x1 = srcCx; y1 = src.y + src.height;
+      x2 = tgtCx; y2 = tgt.y;
+    } else {
+      x1 = srcCx; y1 = src.y;
+      x2 = tgtCx; y2 = tgt.y + tgt.height;
     }
   }
 
-  // Fallback: center-to-center
-  const src = nodePositions.find(n => n.id === edge.sources?.[0]);
-  const tgt = nodePositions.find(n => n.id === edge.targets?.[0]);
-  if (!src || !tgt) return '';
-  const x1 = src.x + src.width / 2;
-  const y1 = src.y + src.height / 2;
-  const x2 = tgt.x + tgt.width / 2;
-  const y2 = tgt.y + tgt.height / 2;
-  return `M${x1.toFixed(1)},${y1.toFixed(1)} L${x2.toFixed(1)},${y2.toFixed(1)}`;
+  // L-shaped elbow: horizontal segment first, then vertical
+  const midX = (x1 + x2) / 2;
+  return `M${x1.toFixed(1)},${y1.toFixed(1)} `
+       + `L${midX.toFixed(1)},${y1.toFixed(1)} `
+       + `L${midX.toFixed(1)},${y2.toFixed(1)} `
+       + `L${x2.toFixed(1)},${y2.toFixed(1)}`;
 }
 
 // ─── SVG generation ───────────────────────────────────────────────────────────
@@ -204,36 +221,37 @@ function generateSVG(layout, model) {
   </g>`;
     }).join('');
 
-  // Collect edges from ELK output (recursively from all levels)
-  const allEdges = [];
-  function collectEdges(node) {
-    for (const e of node.edges || []) allEdges.push(e);
-    for (const c of node.children || []) collectEdges(c);
-  }
-  collectEdges(layout);
+  // Use model relationships directly — route via absolute node positions
+  // (bypasses ELK compound-graph edge section coordinate issues)
+  const posMap = new Map(nodePositions.map(n => [n.id, { ...n, x: n.x + MARGIN, y: n.y + MARGIN }]));
 
-  const edgesSVG = allEdges.map(edge => {
-    const modelRel = model.relationships?.find(r => r.id === edge.id);
-    const isReplication = modelRel?.type === 'replicates' || modelRel?.type === 'syncs';
+  const edgesSVG = (model.relationships || []).map(rel => {
+    const src = posMap.get(rel.source);
+    const tgt = posMap.get(rel.target);
+    if (!src || !tgt) return '';
+    const isReplication = rel.type === 'replicates' || rel.type === 'syncs';
     const strokeColor = isReplication ? '#f59e0b' : '#475569';
     const dash = isReplication ? 'stroke-dasharray="6 3"' : '';
-    const d = edgePath(edge, nodePositions.map(n => ({ ...n, x: n.x + MARGIN, y: n.y + MARGIN })));
-    if (!d) return '';
-    const label = modelRel?.label || (isReplication ? 'replicates' : '');
+    const d = routeEdge(src, tgt);
+    const label = rel.label || (isReplication ? 'replicates' : '');
+    const edgeId = `e_${rel.id.replace(/[^a-z0-9]/gi, '_')}`;
     return `
-  <path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="1.5" ${dash} marker-end="url(#arrow)"/>
-  ${label ? `<text font-family="monospace" font-size="9" fill="${strokeColor}aa">
-    <textPath href="#p_${edge.id}" startOffset="50%" text-anchor="middle">${escapeXml(label)}</textPath>
-  </text>
-  <path id="p_${edge.id}" d="${d}" fill="none" stroke="none"/>` : ''}`;
+  <path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="1.5" ${dash} marker-end="url(#arrow-${isReplication ? 'amber' : 'gray'})"/>
+  ${label ? `<path id="${edgeId}" d="${d}" fill="none" stroke="none"/>
+  <text font-family="monospace" font-size="9" fill="${strokeColor}cc">
+    <textPath href="#${edgeId}" startOffset="50%" text-anchor="middle">${escapeXml(label)}</textPath>
+  </text>` : ''}`;
   }).join('');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width + MARGIN * 2}" height="${height + MARGIN * 2 + 30}"
      viewBox="0 0 ${width + MARGIN * 2} ${height + MARGIN * 2 + 30}">
   <defs>
-    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+    <marker id="arrow-gray" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
       <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
     </marker>
   </defs>
   <rect width="100%" height="100%" fill="#0f172a"/>

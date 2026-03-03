@@ -176,18 +176,24 @@ export function Canvas() {
         const rfNodes: Node[] = [];
         flattenElk(layout, model, rfNodes);
 
-        const rfEdges: Edge[] = (model.relationships ?? []).map(r => ({
-          id: r.id,
-          source: r.source,
-          target: r.target,
-          label: r.label ?? r.type,
-          animated: r.type === 'replicates' || r.type === 'syncs',
-          style: {
-            stroke: r.type === 'replicates' ? '#f59e0b' : '#475569',
-            strokeDasharray: r.type === 'replicates' ? '6 3' : undefined,
-          },
-          labelStyle: { fill: '#94a3b8', fontSize: 9 },
-        }));
+        const rfEdges: Edge[] = (model.relationships ?? []).map(r => {
+          const isReplication = r.type === 'replicates' || r.type === 'syncs';
+          return {
+            id: r.id,
+            source: r.source,
+            target: r.target,
+            type: 'smoothstep',
+            animated: isReplication,
+            label: r.label ?? (isReplication ? r.type : undefined),
+            style: {
+              stroke: isReplication ? '#f59e0b' : '#64748b',
+              strokeDasharray: isReplication ? '6 3' : undefined,
+              strokeWidth: 1.5,
+            },
+            labelStyle: { fill: '#94a3b8', fontSize: 9 },
+            labelBgStyle: { fill: '#0f172a', fillOpacity: 0.8 },
+          };
+        });
 
         setNodes(rfNodes);
         setEdges(rfEdges);
