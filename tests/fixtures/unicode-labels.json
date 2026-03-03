@@ -1,0 +1,12 @@
+{
+  "meridia": "1.0",
+  "metadata": { "title": "Unicode & Special <chars>" },
+  "nodes": [
+    { "id": "n1", "type": "software_system", "label": "Système Principal" },
+    { "id": "n2", "type": "database", "label": "База данных <primary>" },
+    { "id": "n3", "type": "load_balancer", "label": "Balancer & Router" }
+  ],
+  "relationships": [
+    { "id": "r1", "type": "uses", "source": "n1", "target": "n2" }
+  ]
+}

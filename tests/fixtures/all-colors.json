@@ -1,0 +1,17 @@
+{
+  "meridia": "1.0",
+  "metadata": { "title": "All Color Categories" },
+  "nodes": [
+    { "id": "k1", "type": "kubernetes_cluster", "label": "K8s Cluster" },
+    { "id": "n1", "type": "subnet", "label": "Subnet" },
+    { "id": "c1", "type": "virtual_machine", "label": "VM" },
+    { "id": "s1", "type": "storage_volume", "label": "Storage" },
+    { "id": "d1", "type": "site", "label": "Site" },
+    { "id": "db1", "type": "database", "label": "Database" },
+    { "id": "x1", "type": "software_system", "label": "App" }
+  ],
+  "relationships": [
+    { "id": "r1", "type": "uses", "source": "x1", "target": "db1" },
+    { "id": "r2", "type": "uses", "source": "c1", "target": "n1" }
+  ]
+}

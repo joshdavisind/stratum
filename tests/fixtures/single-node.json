@@ -1,0 +1,5 @@
+{
+  "meridia": "1.0",
+  "metadata": { "title": "Single Node" },
+  "nodes": [{ "id": "n1", "type": "software_system", "label": "My System" }]
+}

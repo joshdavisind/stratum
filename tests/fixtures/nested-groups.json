@@ -1,0 +1,13 @@
+{
+  "meridia": "1.0",
+  "metadata": { "title": "Nested Groups" },
+  "nodes": [
+    { "id": "site1", "type": "site", "label": "Primary Site", "group": true, "children": ["zone1", "db1"] },
+    { "id": "zone1", "type": "availability_zone", "label": "Zone A", "group": true, "children": ["vm1"] },
+    { "id": "vm1", "type": "virtual_machine", "label": "App Server" },
+    { "id": "db1", "type": "database", "label": "Primary DB" }
+  ],
+  "relationships": [
+    { "id": "r1", "type": "uses", "source": "vm1", "target": "db1" }
+  ]
+}
