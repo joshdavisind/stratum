@@ -1,0 +1,13 @@
+{
+  "name": "@gordian/stratum",
+  "version": "0.0.1",
+  "description": "Stratum — OSS renderer for Meridia infrastructure diagrams",
+  "private": false,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshdavisind/stratum.git"
+  },
+  "keywords": ["meridia", "infrastructure", "diagram", "react-flow", "elk", "renderer"]
+}
